@@ -928,8 +928,9 @@ const FILE_CACHE_STORE = 'kv';
 const FILE_CACHE_KEY = 'last-files';
 let _fileCacheSaveTimer = null;
 let OVERVIEW_BUILT=false;
+let ALLTIME_READY=false;  // vira true quando o cálculo de histórico em background termina
 let YEAR_SELECT_BUILT=false;
-function ensureOverviewBuilt(){ if(!OVERVIEW_BUILT){ buildOverview(); OVERVIEW_BUILT=true; } }
+function ensureOverviewBuilt(){ if(!ALLTIME_READY){ return; } if(!OVERVIEW_BUILT){ buildOverview(); OVERVIEW_BUILT=true; } }
 function ensureYearSelectBuilt(){ if(!YEAR_SELECT_BUILT){ buildYearSelect(); YEAR_SELECT_BUILT=true; } }
 
 // ── LIVRO-CAIXA: Estado ────────────────────────────────────────────────────
@@ -1278,7 +1279,10 @@ async function clearFileCache() {
   }
 }
 
+let LOAD_BUSY = false;   // trava anti-dobra: impede carga/compute all-time concorrente
 async function startLoad() {
+  if (LOAD_BUSY) { console.warn('startLoad ignorado: carga já em andamento (evitando dobra no all-time).'); return; }
+  LOAD_BUSY = true;
   document.getElementById('loading-line').style.display='block';
   document.getElementById('btn-load').disabled=true;
   setLoadStatus('Preparando carregamento progressivo…');
@@ -1301,17 +1305,47 @@ async function startLoad() {
     setLoadStatus('Organizando semanas…');
     buildAllWeeks();
     await yieldToBrowser();
-    await computeAlltimeStatsProgressive();
-    await buildArtistWeeklyChartProgressive();
-    setLoadStatus('Abrindo dashboard…');
-    await yieldToBrowser();
+
+    // ⚡ Abre a tela JÁ (chart da semana atual não depende do histórico all-time;
+    // renderChart tem fallback para TRACK_ALLTIME ainda vazio). O cálculo pesado
+    // roda em segundo plano logo abaixo e re-renderiza quando terminar.
+    setLoadStatus('Abrindo dashboard… 100%');
     init();
-    setLoadStatus('Carregado. 100%');
+
+    // Histórico all-time + ranking de artistas: em background, sem travar a 1ª tela
+    (async () => {
+      try {
+        await computeAlltimeStatsProgressive();
+        await buildArtistWeeklyChartProgressive();
+        ALLTIME_READY=true;
+        // Atualiza cabeçalho e chart agora que os totais existem
+        try {
+          const totalArtists=Object.keys(ARTIST_ALLTIME).length;
+          const totalCopies=Object.values(ARTIST_ALLTIME).reduce((s,a)=>s+(a.singleCopies||0),0);
+          const mhl=document.getElementById('mh-left');
+          const mhr=document.getElementById('mh-right-text');
+          if (mhl) mhl.innerHTML=`${ALL_WEEKS.length} semanas<br>${totalArtists.toLocaleString('pt-BR')} artistas`;
+          if (mhr) mhr.innerHTML=`${fmtCopies(totalCopies)} cópias<br>${fmtWeekLabel(CURRENT_WEEK)}`;
+        } catch(_) {}
+        if (typeof renderChart==='function') renderChart();
+        // Se o usuário já estiver na Visão Geral aguardando, monta agora
+        try {
+          const ov=document.getElementById('page-overview');
+          if (ov && ov.classList.contains('active') && !OVERVIEW_BUILT) { buildOverview(); OVERVIEW_BUILT=true; }
+        } catch(_) {}
+      } catch (e) {
+        console.warn('Cálculo de histórico em background falhou:', e);
+      } finally {
+        LOAD_BUSY = false;   // libera só quando o compute all-time termina
+      }
+    })();
+
   } catch (err) {
     console.error(err);
     setLoadStatus('Erro ao carregar CSV: '+(err && err.message ? err.message : err));
     document.getElementById('btn-load').disabled=false;
     document.getElementById('loading-line').style.display='none';
+    LOAD_BUSY = false;   // libera se a fase síncrona falhar (background nem chegou a rodar)
   }
 }
 
@@ -1680,6 +1714,7 @@ function init() {
   renderChart();
 }
 function reloadDashboard() {
+  LOAD_BUSY=false;   // destrava caso o usuário troque arquivos no meio de uma carga
   pendingSinglesFiles=[]; pendingAlbumsFiles=[]; OVERVIEW_BUILT=false; YEAR_SELECT_BUILT=false;
   ['dz-singles','dz-albums'].forEach(id=>document.getElementById(id).classList.remove('loaded','loaded-album'));
   ['fl-singles','fl-albums','fi-singles','fi-albums'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=el.innerHTML||''; if(el&&el.tagName==='INPUT') el.value=''; });
@@ -1808,6 +1843,7 @@ function renderBill200(rows,container) {
 }
 function switchChart(type) {
   if (type==='bill200'&&!HAS_ALBUMS) return;
+  if (type==='artists'&&!ALLTIME_READY) { alert('Ainda calculando o ranking de artistas… aguarde alguns segundos.'); return; }
   CURRENT_CHART=type;
   document.getElementById('ct-hot100').classList.toggle('active',type==='hot100');
   document.getElementById('ct-bill200').classList.toggle('active',type==='bill200');
@@ -2916,6 +2952,7 @@ function refreshArtistPage() {
   setTimeout(()=>drawSparkline(artist,SPARKLINE_MODE,year),30);
 }
 function openArtist(artist) {
+  if (!ALLTIME_READY) { alert('Ainda calculando o histórico completo… aguarde alguns segundos e tente de novo.'); return; }
   CURRENT_ARTIST=artist; ARTIST_YEAR_FILTER=null; SPARKLINE_MODE='total';
   document.getElementById('artist-name').textContent=artist;
   const years=getArtistYears(artist);
