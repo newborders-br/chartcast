@@ -3302,32 +3302,28 @@ function rcCard(label, name, artistName, val, sub, isAlbum, listKey) {
 
 
 function collectTopWeekRows(rawData, isAlbum) {
-  const top = [];
   const LIMIT = 50;
   const labelCache = {};
-  const maybeAdd = (item) => {
-    if (top.length < LIMIT || item._copies > top[top.length - 1]._copies) {
-      top.push(item);
-      top.sort((a,b)=>b._copies-a._copies);
-      if (top.length > LIMIT) top.length = LIMIT;
-    }
-  };
+  const best = {}; // dedupe: mantém só a melhor semana de cada single/álbum, igual já é feito para artistas
   ALL_WEEKS.forEach(wk => {
     const wkLabel = labelCache[wk] || (labelCache[wk] = fmtWeekLabel(wk));
     (rawData[wk] || []).forEach(r => {
       const copies = Number(r.copies) || 0;
       if (copies <= 0) return;
-      maybeAdd({
-        name: r.title,
-        artist: r.artist,
-        _copies: copies,
-        val: fmtCopies(copies),
-        sub: `${wkLabel} · ${fmtRank(r.rank)}`,
-        isAlbum
-      });
+      const key = r.title + '|||' + r.artist;
+      if (!best[key] || copies > best[key]._copies) {
+        best[key] = {
+          name: r.title,
+          artist: r.artist,
+          _copies: copies,
+          val: fmtCopies(copies),
+          sub: `${wkLabel} · ${fmtRank(r.rank)}`,
+          isAlbum
+        };
+      }
     });
   });
-  return top.map(({_copies, ...row}) => row);
+  return Object.values(best).sort((a,b)=>b._copies-a._copies).slice(0, LIMIT).map(({_copies, ...row}) => row);
 }
 
 function parseCopiesLabel(v) {
