@@ -318,6 +318,22 @@ select:focus { border-color:var(--ink); }
 .arc-rank { font-family:'Bebas Neue',cursive; font-size:28px; line-height:1; color:var(--gold2); }
 .arc-label { font-size:8px; letter-spacing:2px; text-transform:uppercase; color:var(--muted); margin-top:4px; }
 .arc-val { font-size:10px; color:var(--ink2); margin-top:3px; }
+.artist-records-title { display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.afr-open-btn { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:2px; text-transform:uppercase; color:var(--red); background:none; border:1px solid var(--red); padding:5px 12px; cursor:pointer; transition:all 0.15s; }
+.afr-open-btn:hover { background:var(--red); color:#fff; }
+.afr-group { margin-bottom:16px; }
+.afr-group:last-child { margin-bottom:0; }
+.afr-group-title { font-size:9px; letter-spacing:2px; text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--border); padding-bottom:6px; margin-bottom:6px; }
+.afr-row { display:flex; align-items:center; gap:12px; padding:8px 4px; border-bottom:1px solid var(--border2); cursor:pointer; transition:background 0.1s; }
+.afr-row:last-child { border-bottom:none; }
+.afr-row:hover { background:var(--bg2); }
+.afr-row.no-click { cursor:default; }
+.afr-row.no-click:hover { background:none; }
+.afr-rank { font-family:'Bebas Neue',cursive; font-size:20px; color:var(--gold2); width:32px; flex-shrink:0; }
+.afr-body { flex:1; overflow:hidden; }
+.afr-title { font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--muted); }
+.afr-name { font-family:'Playfair Display',serif; font-size:13px; font-weight:700; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.afr-val { font-family:'Bebas Neue',cursive; font-size:16px; color:var(--ink2); flex-shrink:0; text-align:right; }
 .ahs.clickable { cursor:pointer; transition:background 0.15s, transform 0.15s; padding-left:10px; margin-left:-10px; }
 .ahs.clickable:hover { background:rgba(255,255,255,0.05); transform:translateY(-1px); }
 
@@ -2935,12 +2951,62 @@ function renderArtistRecordPlacements(artist, year) {
   const rows = getArtistRecordPlacements(artist, year).slice(0, 8);
   const el = document.getElementById('artist-records-panel');
   if (!el) return;
+  const titleRow = `<div class="artist-records-title"><span>Posições nos recordes</span><button class="afr-open-btn" onclick="openArtistFullRecordsModal(CURRENT_ARTIST, ARTIST_YEAR_FILTER)">Ver todas as aparições →</button></div>`;
   el.innerHTML = rows.length ? `
-    <div class="artist-records-title">Posições nos recordes</div>
+    ${titleRow}
     <div class="artist-records-sub">${year ? `Ranking entre artistas em ${year}` : 'Ranking histórico global'}</div>
     <div class="artist-records-grid">
       ${rows.map(r => `<div class="artist-record-card"><div class="arc-rank">#${r.rank}</div><div class="arc-label">${esc(r.label)}</div><div class="arc-val">${esc(r.val)}</div></div>`).join('')}
-    </div>` : `<div class="artist-records-title">Posições nos recordes</div><div class="artist-records-sub">${year ? `Sem posições no ranking de ${year}` : 'Sem posições no ranking histórico'}</div>`;
+    </div>` : `${titleRow}<div class="artist-records-sub">${year ? `Sem posições no ranking de ${year}` : 'Sem posições no ranking histórico'}</div>`;
+}
+
+// ── TODAS AS APARIÇÕES DO ARTISTA NOS RECORDES (singles, álbuns, eras, artista) ──
+function getArtistAllRecordAppearances(artist, year) {
+  if (year) buildYearRecords(year); else buildRecords();
+  const rows = [];
+  Object.entries(_RLISTS).forEach(([key, list]) => {
+    if (!list || !Array.isArray(list.rows)) return;
+    const isYearList = key.startsWith('y-');
+    if (Boolean(year) !== isYearList) return; // compara só na mesma camada (global vs. ano filtrado)
+    list.rows.forEach((r, i) => {
+      const isMatch = list.isArtist ? r.name === artist : r.artist === artist;
+      if (!isMatch) return;
+      rows.push({
+        listKey: key, category: list.label, title: list.title, col: list.col,
+        rank: i + 1, itemName: list.isArtist ? null : r.name, val: r.val, sub: r.sub || null,
+        isAlbum: r.isAlbum ?? list.isAlbum, isArtist: !!list.isArtist
+      });
+    });
+  });
+  rows.sort((a, b) => a.rank - b.rank);
+  return rows;
+}
+function openArtistFullRecordsModal(artist, year) {
+  if (!artist) return;
+  const rows = getArtistAllRecordAppearances(artist, year);
+  document.getElementById('rmodal-eyebrow').textContent = year ? `Recordes · ${year}` : 'Recordes · Histórico';
+  document.getElementById('rmodal-title').textContent = `${artist} — ${rows.length ? `${rows.length} ${rows.length===1?'aparição':'aparições'} em rankings` : 'nenhuma aparição em rankings'}`;
+  const groups = {};
+  rows.forEach(r => { (groups[r.category] = groups[r.category] || []).push(r); });
+  document.getElementById('rmodal-body').innerHTML = rows.length ? Object.entries(groups).map(([cat, items]) => `
+    <div class="afr-group">
+      <div class="afr-group-title">${esc(cat)}</div>
+      ${items.map(it => {
+        const clickable = !it.isArtist;
+        const cid = clickable ? _reg(it.isAlbum ? {album: it.itemName, artist} : {title: it.itemName, artist}) : null;
+        const clickFn = clickable ? (it.isAlbum ? `_albumClick(${cid});closeRecordsModal()` : `_trackClick(${cid});closeRecordsModal()`) : '';
+        return `<div class="afr-row${clickable?'':' no-click'}" ${clickable?`onclick="${clickFn}"`:''}>
+          <div class="afr-rank">#${it.rank}</div>
+          <div class="afr-body">
+            <div class="afr-title">${esc(it.title)}</div>
+            ${it.itemName ? `<div class="afr-name">${esc(it.itemName)}</div>` : ''}
+          </div>
+          <div class="afr-val">${esc(it.val)}</div>
+        </div>`;
+      }).join('')}
+    </div>`).join('') : `<div class="empty-state">Este artista não aparece em nenhum recorde${year?` de ${year}`:''}.</div>`;
+  document.getElementById('records-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
 }
 function computeArtistStats(artist,year) {
   const weeksS=Object.keys(DATA_SINGLES_RAW).filter(wk=>!year||wk.startsWith(year));
