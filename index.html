@@ -1074,8 +1074,13 @@ function calcMetaBonus(vendasAcumuladas, meta) {
 }
 
 // ── Fórmulas unificadas ────────────────────────────────────────────────────
-function calcLivroCaixaAlgorithms({ scrobblesAtuais, singleWeight, pesoHistorico, lastScore, lcEntry, meta }) {
-  const vendasAcumuladas    = lcEntry ? lcEntry.copies_all_time       : 0;
+function calcLivroCaixaAlgorithms({ scrobblesAtuais, singleWeight, pesoHistorico, lastScore, lcEntry, meta, vendasAcumOverride }) {
+  // Fonte de vendas acumuladas p/ saturação/debut/bônus: prefere o valor limpo
+  // (soma semanal de copies via TRACK_ALLTIME) passado pelo caller. Só cai no
+  // copies_all_time do Livro-Caixa se o override não vier. Isso blinda o viewer
+  // contra o campo copies_all_time dobrado no vendas_totais.csv (bug de acúmulo
+  // do extractor ≤ v8.8) e continua correto após o v9.
+  const vendasAcumuladas    = (typeof vendasAcumOverride === 'number') ? vendasAcumOverride : (lcEntry ? lcEntry.copies_all_time : 0);
   const scrobblesAnteriores = lcEntry ? (lcEntry.last_week_scrobbles ?? lcEntry.last_week ?? 0) : 0;
   const weeksOnChart        = lcEntry ? lcEntry.last_woc        : 1;
   const scoreBase           = lcEntry ? lcEntry.last_score      : lastScore;
@@ -2366,7 +2371,10 @@ function buildSoFarRows(type, tracks, wkId, singleCopiesByAlbum=new Map()) {
         singleWeight      : cfg.currentUnit,
         pesoHistorico     : carryPart * cfg.historyUnit,
         lastScore         : carryScore,
-        lcEntry, meta
+        lcEntry, meta,
+        // vendas acumuladas LIMPAS (soma semanal, mesma fonte do header "Vendas
+        // Chartcast"), evitando o copies_all_time dobrado do vendas_totais.csv
+        vendasAcumOverride: getTrackOfficialCopies(r.title, r.artist)
       });
       copies       = alg.copies;
       score        = alg.novoScore;
