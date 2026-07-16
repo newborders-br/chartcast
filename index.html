@@ -205,6 +205,7 @@ select:focus { border-color:var(--ink); }
 .cr-bar.album-bar { background:linear-gradient(90deg,var(--purple),#a888d4); }
 .cr-artist-breakdown { font-size:9px; color:var(--muted); margin-top:2px; }
 .cr-artist-breakdown span { color:var(--purple); }
+.cr-artist-breakdown span.feat-part { color:var(--blue); }
 
 /* --- GOVERNANÇA: badges dos novos algoritmos --- */
 .gov-badge {
@@ -652,6 +653,7 @@ select:focus { border-color:var(--ink); }
       <button class="ctype-tab artist-tab" id="ct-artists" onclick="switchChart('artists')">⭐ Artist 200</button>
       <button class="ctype-tab" id="ct-sofar-singles" onclick="switchChart('sofar-singles')">⏳ This Week — Singles</button>
       <button class="ctype-tab album-tab" id="ct-sofar-albums" onclick="switchChart('sofar-albums')">⏳ This Week — Álbuns</button>
+      <button class="ctype-tab artist-tab" id="ct-sofar-artists" onclick="switchChart('sofar-artists')">⏳ This Week — Artists</button>
     </div>
 
     <div class="sofar-panel" id="sofar-panel">
@@ -772,6 +774,11 @@ select:focus { border-color:var(--ink); }
         </div>
         <div class="as-sub" id="artist-albums-sub">Albums 100 — rank real</div>
         <table class="a-table"><tbody id="artist-albums"></tbody></table>
+        <div id="artist-feats-section" style="display:none;margin-top:28px">
+          <div class="as-title-row"><div class="as-title">Participações</div></div>
+          <div class="as-sub">Como convidado — feat.</div>
+          <table class="a-table"><tbody id="artist-feats"></tbody></table>
+        </div>
       </div>
       <div class="sparkline-section">
         <div class="as-title">Histórico semanal</div>
@@ -910,6 +917,7 @@ async function loadFromCloud(opts) {
         const parsed = JSON.parse(metasText || '');
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           SOFAR_METAS_JSON = parsed;
+          FEAT_INDEX = null; FEAT_GUEST_INDEX = null;
           SOFAR_METAS_IMPORTED_AT = new Date();
           if (typeof updateMetasJsonBtn === 'function') updateMetasJsonBtn();
         }
@@ -1571,16 +1579,19 @@ async function buildArtistWeeklyChartProgressive() {
   for (let wi=0; wi<ALL_WEEKS.length; wi++) {
     const wk=ALL_WEEKS[wi];
     const byArtist = {};
+    const ensure = a => { if (!byArtist[a]) byArtist[a] = {singleCopies:0, albumCopies:0, featCopies:0}; return byArtist[a]; };
     (DATA_SINGLES_RAW[wk]||[]).forEach(r => {
-      if (!byArtist[r.artist]) byArtist[r.artist] = {singleCopies:0, albumCopies:0};
-      byArtist[r.artist].singleCopies += r.copies;
+      ensure(r.artist).singleCopies += r.copies;
+      getTrackFeats(r.title, r.artist).forEach(g => {
+        if (sfNorm(g)===sfNorm(r.artist)) return;
+        ensure(g).featCopies += r.copies;
+      });
     });
     (DATA_ALBUMS_RAW[wk]||[]).forEach(r => {
-      if (!byArtist[r.artist]) byArtist[r.artist] = {singleCopies:0, albumCopies:0};
-      byArtist[r.artist].albumCopies += r.copies;
+      ensure(r.artist).albumCopies += r.copies;
     });
     const sorted = Object.entries(byArtist)
-      .map(([artist, d]) => ({artist, singleCopies:d.singleCopies, albumCopies:d.albumCopies, totalCopies:d.singleCopies+d.albumCopies}))
+      .map(([artist, d]) => ({artist, singleCopies:d.singleCopies, albumCopies:d.albumCopies, featCopies:d.featCopies, totalCopies:d.singleCopies+d.albumCopies+d.featCopies}))
       .sort((a,b) => b.totalCopies - a.totalCopies);
     ARTIST_WEEKLY_CHART[wk] = sorted;
     sorted.forEach((row, i) => {
@@ -1859,7 +1870,7 @@ function fmtCopies(n) {
 
 // ── CHART RENDERING ───────────────────────────────────────────────────────
 function renderChart() {
-  const isSoFar = CURRENT_CHART==='sofar-singles'||CURRENT_CHART==='sofar-albums';
+  const isSoFar = CURRENT_CHART==='sofar-singles'||CURRENT_CHART==='sofar-albums'||CURRENT_CHART==='sofar-artists';
   document.body.classList.toggle('sofar-active', isSoFar);
   document.getElementById('week-label').textContent=isSoFar ? 'This Week — provisório' : fmtWeekLabel(CURRENT_WEEK);
   document.getElementById('sofar-panel').classList.toggle('open', isSoFar);
@@ -1868,6 +1879,7 @@ function renderChart() {
   if (CURRENT_CHART==='hot100') renderHot100(DATA_SINGLES[CURRENT_WEEK]||[],container);
   else if (CURRENT_CHART==='bill200') renderBill200(DATA_ALBUMS[CURRENT_WEEK]||[],container);
   else if (CURRENT_CHART==='artists') renderArtistChart(container);
+  else if (CURRENT_CHART==='sofar-artists') renderSoFarArtistChart(container);
   else renderSoFarChart(CURRENT_CHART==='sofar-albums'?'albums':'singles', container);
 }
 function safeRank(r) { return (!r||r>=9000)?null:r; }
@@ -1945,9 +1957,12 @@ function switchChart(type) {
   document.getElementById('ct-artists').classList.toggle('active',type==='artists');
   document.getElementById('ct-sofar-singles').classList.toggle('active',type==='sofar-singles');
   document.getElementById('ct-sofar-albums').classList.toggle('active',type==='sofar-albums');
+  document.getElementById('ct-sofar-artists').classList.toggle('active',type==='sofar-artists');
   const hdr=document.getElementById('chart-header-row');
   if (type==='artists') {
     hdr.innerHTML=`<span class="ch-label">Pos.</span><span class="ch-label">Artista</span><span class="ch-label r">Peak</span><span class="ch-label r">Semanas</span><span class="ch-label r">Cópias</span>`;
+  } else if (type==='sofar-artists') {
+    hdr.innerHTML=`<span class="ch-label">Pos.</span><span class="ch-label">Artista</span><span class="ch-label r sf-score-col">Score</span><span class="ch-label r sf-scrobbles-col">Scrobbles</span><span class="ch-label r sf-copies-col">Cópias</span>`;
   } else if (type==='sofar-singles'||type==='sofar-albums') {
     hdr.innerHTML=`<span class="ch-label">Pos.</span><span class="ch-label">Título / Artista</span><span class="ch-label r sf-score-col">Score</span><span class="ch-label r sf-scrobbles-col">Scrobbles</span><span class="ch-label r sf-copies-col">Cópias / Meta</span>`;
   } else {
@@ -2122,6 +2137,7 @@ function importMetasJson(file) {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
         throw new Error('Formato inválido');
       SOFAR_METAS_JSON = parsed;
+      FEAT_INDEX = null; FEAT_GUEST_INDEX = null;
       SOFAR_METAS_IMPORTED_AT = new Date();
       updateMetasJsonBtn();
       renderChart(); // re-renderiza popup se aberto
@@ -2146,6 +2162,38 @@ function getMetaJsonEntry(title, artist) {
   );
   if (!titleKey) return null;
   return { ...artistObj.singles[titleKey], _artistData: artistObj };
+}
+
+// ── FEATS (fonte de verdade = SOFAR_METAS_JSON[lead].singles[title].feats) ──
+let FEAT_INDEX = null;        // sfNorm(lead)|||sfNorm(title) -> [convidados]
+let FEAT_GUEST_INDEX = null;  // sfNorm(convidado) -> [{title, leadArtist}]
+function buildFeatIndex() {
+  FEAT_INDEX = {}; FEAT_GUEST_INDEX = {};
+  if (!SOFAR_METAS_JSON) return;
+  for (const [lead, ao] of Object.entries(SOFAR_METAS_JSON)) {
+    const singles = (ao && ao.singles) || {};
+    for (const [title, so] of Object.entries(singles)) {
+      const feats = (so && Array.isArray(so.feats)) ? so.feats : [];
+      if (!feats.length) continue;
+      FEAT_INDEX[sfNorm(lead) + '|||' + sfNorm(title)] = feats;
+      feats.forEach(g => {
+        if (sfNorm(g) === sfNorm(lead)) return;
+        const gk = sfNorm(g);
+        (FEAT_GUEST_INDEX[gk] = FEAT_GUEST_INDEX[gk] || []).push({ title, leadArtist: lead });
+      });
+    }
+  }
+}
+function ensureFeatIndex() { if (FEAT_INDEX === null) buildFeatIndex(); }
+// convidados de uma faixa (lead, título)
+function getTrackFeats(title, leadArtist) {
+  ensureFeatIndex();
+  return FEAT_INDEX[sfNorm(leadArtist) + '|||' + sfNorm(title)] || [];
+}
+// participações de um artista como convidado → [{title, leadArtist}]
+function getArtistParticipations(artist) {
+  ensureFeatIndex();
+  return FEAT_GUEST_INDEX[sfNorm(artist)] || [];
 }
 function updateMetasJsonBtn() {
   const btn = document.getElementById('btn-import-metas-json');
@@ -2564,6 +2612,54 @@ function renderSoFarChart(type, container) {
     </div>`;
   }).join('');
 }
+// ── SO-FAR ARTISTS (provisional aggregation, mirrors closed Artist 200) ────
+function soFarArtistRows() {
+  const byArtist = {};
+  const ensure = a => { if (!byArtist[a]) byArtist[a] = {artist:a, singleCopies:0, albumCopies:0, featCopies:0, scrobbles:0, score:0}; return byArtist[a]; };
+  (SOFAR.singles||[]).forEach(r => {
+    const c=Number(r.copies)||0, sc=Number(r.scrobbles)||0, s=Number(r.score)||0;
+    const lead=ensure(r.artist); lead.singleCopies+=c; lead.scrobbles+=sc; lead.score+=s;
+    getTrackFeats(r.title, r.artist).forEach(g => {
+      if (sfNorm(g)===sfNorm(r.artist)) return;
+      ensure(g).featCopies += c;   // crédito integral pro convidado
+    });
+  });
+  (SOFAR.albums||[]).forEach(r => {
+    const c=Number(r.copies)||0, sc=Number(r.scrobbles)||0, s=Number(r.score)||0;
+    const lead=ensure(r.artist); lead.albumCopies+=c; lead.scrobbles+=sc; lead.score+=s;
+  });
+  return Object.values(byArtist)
+    .map(d => ({...d, copies:d.singleCopies + d.albumCopies + d.featCopies}))
+    .filter(d => d.copies > 0)
+    .sort((a,b) => b.copies - a.copies);
+}
+function renderSoFarArtistChart(container) {
+  const title='Artist 200 So-Far';
+  if (!SOFAR_META) { container.innerHTML=`<div class="no-data-notice"><div class="no-data-title">${title}</div><div class="no-data-sub">Preencha Last.fm e clique em Atualizar This Week.</div></div>`; return; }
+  const rowsAll = filterSoFarSearch(soFarArtistRows());
+  if (!rowsAll.length) { container.innerHTML=`<div class="no-data-notice"><div class="no-data-title">Sem resultados no This Week</div><div class="no-data-sub">${SOFAR_SEARCH?`Busca: ${esc(SOFAR_SEARCH)}`:SOFAR_META.week}</div></div>`; return; }
+  const rows = rowsAll.slice(0, MAX_ARTIST_RANK);
+  const maxC = rows[0]?.copies || 1;
+  container.innerHTML = rows.map((r,i) => {
+    const pos = i + 1;
+    const topClass = pos===1?'top1':pos===2?'top2':pos===3?'top3':'';
+    const barPct = Math.round((r.copies / maxC) * 100);
+    const _aid = _reg({artist: r.artist});
+    const parts = [];
+    if (r.singleCopies > 0) parts.push(`${fmtCopies(r.singleCopies)} singles`);
+    if (HAS_ALBUMS && r.albumCopies > 0) parts.push(`<span>${fmtCopies(r.albumCopies)} álbuns</span>`);
+    if (r.featCopies > 0) parts.push(`<span class="feat-part">${fmtCopies(r.featCopies)} feat</span>`);
+    const breakdown = parts.length ? `<div class="cr-artist-breakdown">${parts.join(' · ')}</div>` : '';
+    return `<div class="chart-row ${topClass}" style="animation-delay:${i*0.006}s;cursor:pointer" onclick="_artistClick(${_aid})">
+      <div><div class="cr-rank">${pos}</div></div>
+      <div class="cr-info"><div class="cr-title">${esc(r.artist)}</div>${breakdown}</div>
+      <div class="cr-peak-cell sf-score-cell"><div class="cr-peak-main">${fmtScore(r.score)}</div><div class="cr-peak-label">score</div></div>
+      <div class="cr-weeks-cell sf-scrobbles-cell"><div class="cr-weeks-val">${r.scrobbles}</div><div class="cr-weeks-label">scrobbles</div></div>
+      <div class="cr-copies-cell sf-copies-cell"><div class="cr-copies-val">${fmtCopies(r.copies)}</div><div class="cr-copies-label">cópias</div></div>
+      <div class="cr-bar-wrap"><div class="cr-bar" style="background:linear-gradient(90deg,var(--gold),var(--red));width:${barPct}%"></div></div>
+    </div>`;
+  }).join('');
+}
 function setSoFarSearch(value) { SOFAR_SEARCH = String(value||'').trim(); renderChart(); renderSoFarKpis(); }
 
 function normalizeSearchText(s) { return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(); }
@@ -2864,9 +2960,11 @@ function renderArtistChart(container) {
     const pkRank = safeRank(ac.bestRank) || pos;
     const p1 = pkRank === 1;
     const _aid = _reg({artist: r.artist});
-    const breakdown = HAS_ALBUMS && r.albumCopies > 0
-      ? `<div class="cr-artist-breakdown">${fmtCopies(r.singleCopies)} singles${r.albumCopies>0?` · <span>${fmtCopies(r.albumCopies)} álbuns</span>`:''}</div>`
-      : '';
+    const bparts = [];
+    if (r.singleCopies > 0) bparts.push(`${fmtCopies(r.singleCopies)} singles`);
+    if (HAS_ALBUMS && r.albumCopies > 0) bparts.push(`<span>${fmtCopies(r.albumCopies)} álbuns</span>`);
+    if (r.featCopies > 0) bparts.push(`<span class="feat-part">${fmtCopies(r.featCopies)} feat</span>`);
+    const breakdown = bparts.length ? `<div class="cr-artist-breakdown">${bparts.join(' · ')}</div>` : '';
     return `<div class="chart-row ${topClass}" style="animation-delay:${i*0.006}s;cursor:pointer" onclick="_artistClick(${_aid})">
       <div><div class="cr-rank">${pos}</div>${dH}</div>
       <div class="cr-info"><div class="cr-title">${esc(r.artist)}</div>${breakdown}</div>
@@ -3074,14 +3172,33 @@ function computeArtistStats(artist,year) {
   });
   const eras = Object.values(eraMap).filter(e=>e.totalCopies>0)
     .sort((a,b) => a.dateKey.localeCompare(b.dateKey));
-  return {singleCopies,albumCopies,singleBestRank,albumBestRank,timesNo1,singleTop10,albumTop10,tracks:Object.values(trackMap),albums:Object.values(albumMap),eras};
+  // ── Participações (artista como convidado em faixas de outro lead) ──
+  const featMap={}; let featCopies=0, featBestRank=9999;
+  const parts = getArtistParticipations(artist);
+  if (parts.length) {
+    const wants = new Set(parts.map(p => sfNorm(p.leadArtist)+'|||'+sfNorm(p.title)));
+    weeksS.forEach(wk=>{
+      (DATA_SINGLES_RAW[wk]||[]).forEach(r=>{
+        if (!wants.has(sfNorm(r.artist)+'|||'+sfNorm(r.title))) return;
+        featCopies+=r.copies;
+        const fk=r.title+'|||'+r.artist;
+        if (!featMap[fk]) featMap[fk]={track:r.title,leadArtist:r.artist,copies:0,weeksOnChart:0,bestRank:9999};
+        featMap[fk].copies+=r.copies;
+        if (r.rank<=MAX_CHART_RANK) featMap[fk].weeksOnChart++;
+        if (r.rank<=MAX_CHART_RANK&&r.rank<featMap[fk].bestRank) featMap[fk].bestRank=r.rank;
+        if (r.rank<=MAX_CHART_RANK&&r.rank<featBestRank) featBestRank=r.rank;
+      });
+    });
+  }
+  return {singleCopies,albumCopies,featCopies,singleBestRank,albumBestRank,featBestRank,timesNo1,singleTop10,albumTop10,tracks:Object.values(trackMap),albums:Object.values(albumMap),feats:Object.values(featMap),eras};
 }
 function refreshArtistPage() {
   const artist=CURRENT_ARTIST, year=ARTIST_YEAR_FILTER;
   const stats=computeArtistStats(artist,year);
   const perf=getArtistChartPerformance(artist,year);
-  const totalCopies=stats.singleCopies+stats.albumCopies;
+  const totalCopies=stats.singleCopies+stats.albumCopies+(stats.featCopies||0);
   const hasAlbums=stats.albumCopies>0;
+  const hasFeats=(stats.featCopies||0)>0;
   const peakTxt=perf.bestRank ? `#${perf.bestRank}${perf.bestRank===1&&perf.timesNo1>0 ? ` · ${perf.timesNo1}×` : ''}` : '—';
   const currentTxt=perf.currentRank ? `#${perf.currentRank}` : '—';
   const currentSub=perf.current ? `${fmtCopies(perf.currentCopies)} na semana` : 'sem cópias na semana atual';
@@ -3089,7 +3206,7 @@ function refreshArtistPage() {
     <div class="ahs ahs-total">
       <div class="ahs-val ahs-val-total">${fmtCopies(totalCopies)}</div>
       <div class="ahs-label">Cópias totais${year?' — '+year:''}</div>
-      <div class="ahs-breakdown"><span>Singles: ${fmtCopies(stats.singleCopies)}</span>${hasAlbums?`<span style="color:#a888d4"> · Álbuns: ${fmtCopies(stats.albumCopies)}</span>`:''}</div>
+      <div class="ahs-breakdown"><span>Singles: ${fmtCopies(stats.singleCopies)}</span>${hasAlbums?`<span style="color:#a888d4"> · Álbuns: ${fmtCopies(stats.albumCopies)}</span>`:''}${hasFeats?`<span style="color:var(--blue)"> · Feat: ${fmtCopies(stats.featCopies)}</span>`:''}</div>
     </div>
     <div class="ahs clickable" onclick="openArtistChartModal(CURRENT_ARTIST)"><div class="ahs-val">${currentTxt}</div><div class="ahs-label">Posição atual<br><span style="font-size:8px;opacity:.6">${currentSub}</span></div></div>
     <div class="ahs clickable" onclick="openArtistChartModal(CURRENT_ARTIST)"><div class="ahs-val${perf.bestRank===1?' gold':''}">${peakTxt}</div><div class="ahs-label">Peak Artist 200</div></div>
@@ -3097,6 +3214,7 @@ function refreshArtistPage() {
   renderArtistRecordPlacements(artist, year);
   renderArtistSinglesFromStats(stats.tracks,SINGLES_SORT,stats);
   renderArtistAlbumsFromStats(stats.albums,ALBUMS_SORT);
+  renderArtistFeats(stats.feats);
   setTimeout(()=>drawSparkline(artist,SPARKLINE_MODE,year),30);
 }
 function openArtist(artist) {
@@ -3229,6 +3347,21 @@ function renderArtistAlbumsFromStats(albums,sortBy) {
     const star=recordStarForTitle('album', al.album, CURRENT_ARTIST);
     return `<tr style="cursor:pointer" onclick="_albumClick(${_alid})"><td class="at-rank ${rkC}">${rk}</td><td><div class="at-title">${esc(al.album)}${star}</div><div class="at-sub">${al.weeksOnChart}sem · peak ${peakTxt}</div></td><td class="at-peak ${pkC}">${peakTxt}${no1Txt}</td><td class="at-copies">${fmtCopies(al.copies)}</td></tr>`;
   }).join(''):`<tr><td colspan="4" class="empty-state">${HAS_ALBUMS?'Sem álbuns no chart'+(ARTIST_YEAR_FILTER?' em '+ARTIST_YEAR_FILTER:''):'—'}</td></tr>`;
+}
+function renderArtistFeats(feats) {
+  const section=document.getElementById('artist-feats-section');
+  const body=document.getElementById('artist-feats');
+  if (!section||!body) return;
+  const list=(feats||[]).filter(f=>f.copies>0).sort((a,b)=>b.copies-a.copies);
+  if (!list.length) { section.style.display='none'; body.innerHTML=''; return; }
+  section.style.display='';
+  body.innerHTML=list.map((f,i)=>{
+    const rk=i+1,rkC=rk===1?'r1':rk===2?'r2':rk===3?'r3':'';
+    const pkC=f.bestRank===1?'p1':'';
+    const peakTxt=safeRank(f.bestRank)?`#${f.bestRank}`:'—';
+    const _tid=_reg({title:f.track,artist:f.leadArtist});
+    return `<tr style="cursor:pointer" onclick="_trackClick(${_tid})"><td class="at-rank ${rkC}">${rk}</td><td><div class="at-title">${esc(f.track)}</div><div class="at-sub">com ${esc(f.leadArtist)} · ${f.weeksOnChart}sem · peak ${peakTxt}</div></td><td class="at-peak ${pkC}">${peakTxt}</td><td class="at-copies">${fmtCopies(f.copies)}</td></tr>`;
+  }).join('');
 }
 function switchSparkline(mode) {
   SPARKLINE_MODE=mode;
