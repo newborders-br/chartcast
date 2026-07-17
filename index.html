@@ -1113,9 +1113,11 @@ function calcLivroCaixaAlgorithms({ scrobblesAtuais, singleWeight, pesoHistorico
   const { decay, decayCrash }        = calcDecay(scrobblesAtuais, scrobblesAnteriores);
   const { mDeb, isHype }             = calcDebut(weeksOnChart, vendasAcumuladas);
   const { mBonus, distanciaMeta }    = calcMetaBonus(vendasAcumuladas, meta);
-  const mSatHist   = Math.max(mSat, 0.20);
-  // mBonus amplifica o peso corrente; não afeta carry histórico
-  const copies     = Math.round((scrobblesAtuais * singleWeight * mSat * mDeb * mBonus) + (pesoHistorico * mSatHist));
+  // v8.9: buff (mBonus) também no carry — cheio com scrobble, meio-boost na semana
+  // seca (nunca zera). Saturação NÃO entra no carry: pune venda nova, não a inércia
+  // de score. Mantém o viewer idêntico ao extractor v8.9.
+  const mBonusCarry = scrobblesAtuais > 0 ? mBonus : (1 + (mBonus - 1) * 0.5);
+  const copies     = Math.round((scrobblesAtuais * singleWeight * mSat * mDeb * mBonus) + (pesoHistorico * mBonusCarry));
   const novoScore  = Math.round(((scoreBase * decay) + (scrobblesAtuais * mDeb)) * 100) / 100;
   return { copies, novoScore, mSat, mDeb, mBonus, distanciaMeta, decay, isHype, decayCrash, saturacaoPct };
 }
@@ -2529,7 +2531,7 @@ function buildSoFarRows(type, tracks, wkId, singleCopiesByAlbum=new Map()) {
       const prevScrob = Number(prev?.scrobbles)||0;
       const { decay: albDecay } = calcDecay(r.scrobbles, prevScrob);
       decay  = albDecay;
-      mDeb   = !hadHistory ? 1.5 : 1.0;
+      mDeb   = !hadHistory ? 2.5 : 1.0;  // v8.9: casa com extractor (debut album 2.5)
       isHype = !hadHistory;
       const consec = r.scrobbles > 0 ? (trailingConsec(k) + 1) : 0;
       const fPerm = consec <= 1 ? 0.5 : (consec === 2 ? 0.7 : (consec === 3 ? 0.85 : 1.0));
